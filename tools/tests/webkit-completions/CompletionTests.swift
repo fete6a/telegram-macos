@@ -1,8 +1,18 @@
 import Foundation
 
-public final class WKWebView {}
-public final class WKFrameInfo {}
-public final class WKSecurityOrigin {}
+public final class WKWebView {
+    var url = URL(string: "https://mini.example")
+}
+public final class WKFrameInfo {
+    var isMainFrame = true
+    let securityOrigin = WKSecurityOrigin()
+}
+public final class WKSecurityOrigin {
+    var `protocol` = "https"
+    var host = "mini.example"
+    var port = 0
+}
+__ORIGIN_HELPERS__
 public final class WKOpenPanelParameters {
     let allowsMultipleSelection = true
     let allowsDirectories = false
@@ -40,8 +50,8 @@ struct Strings {
 }
 func strings() -> Strings { Strings() }
 enum FastSettings {
-    static func botAccessTo(_ type: WKMediaCaptureType, peerId: Int) -> Bool { allowed }
-    static func allowBotAccessTo(_ type: WKMediaCaptureType, peerId: Int) { storedGrants += 1 }
+    static func botAccessTo(_ type: WKMediaCaptureType, peerId: Int, accountId: Int, origin: String) -> Bool { allowed }
+    static func allowBotAccessTo(_ type: WKMediaCaptureType, peerId: Int, accountId: Int, origin: String) { storedGrants += 1 }
 }
 enum MediaType { case video, audio }
 struct PermissionSignal {
@@ -55,9 +65,10 @@ func combineLatest(_ first: PermissionSignal, _ second: PermissionSignal) -> Com
 final class Controller {
     var window: Window? = Window()
     var requestData: RequestData? = RequestData()
-    let context = 0
+    let context = Context()
     __METHODS__
 }
+final class Context { let peerId = 2 }
 let test = CommandLine.arguments[1]
 var owner: Controller? = Controller()
 let web = WKWebView(), frame = WKFrameInfo()
@@ -86,10 +97,15 @@ if test.hasPrefix("confirm-") {
 } else if test.hasPrefix("permission-") {
     if test == "permission-cached" { allowed = true }
     if test == "permission-no-bot" { owner!.requestData = nil }
+    if test == "permission-cross-origin" { frame.securityOrigin.host = "third-party.example" }
+    if test == "permission-child-frame" { frame.isMainFrame = false }
     let type: WKMediaCaptureType = test == "permission-unknown" ? .future : test == "permission-microphone" ? .microphone : test.hasPrefix("permission-combined") ? .cameraAndMicrophone : .camera
-    owner!.webView(web, requestMediaCapturePermissionFor: WKSecurityOrigin(), initiatedByFrame: frame, type: type) { decisions.append($0) }
+    let origin = WKSecurityOrigin()
+    if test == "permission-cross-origin" { origin.host = "third-party.example" }
+    owner!.webView(web, requestMediaCapturePermissionFor: origin, initiatedByFrame: frame, type: type) { decisions.append($0) }
     if test == "permission-no-window" { owner!.window = nil }
     if test == "permission-owner-gone" { owner = nil }
+    if test == "permission-navigated" { web.url = URL(string: "https://third-party.example") }
     for permission in permissions { permission(!test.hasSuffix("denied")) }
     if test == "permission-dismiss" { dismissed?() }
     if test == "permission-allow-dismiss" { success?(); dismissed?() }

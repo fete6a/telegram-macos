@@ -9,10 +9,13 @@ parser.add_argument('--source', type=Path, default=root / 'packages/WebAppUI/Sou
 parser.add_argument('--evidence', type=Path)
 args = parser.parse_args()
 source = args.source.read_text()
+helpers_start = source.index('private func webAppOrigin(url:')
+helpers_end = source.index('private func webAppJsStringLiteral', helpers_start)
+helpers = source[helpers_start:helpers_end]
 start = source.index('    public func webView(_ webView: WKWebView, runOpenPanelWith')
 end = source.index('    public func webView(_ webView: WKWebView, createWebViewWith', start)
-fixture = Path(__file__).with_name('CompletionTests.swift').read_text().replace('__METHODS__', source[start:end])
-cases = ['confirm-no-window', 'confirm-accept', 'confirm-cancel', 'confirm-dismiss', 'confirm-accept-dismiss', 'confirm-cancel-dismiss', 'open-no-window', 'open-cancel', 'open-files', 'permission-no-window', 'permission-owner-gone', 'permission-dismiss', 'permission-allow-dismiss', 'permission-cancel-dismiss', 'permission-denied', 'permission-cached', 'permission-no-bot', 'permission-unknown', 'permission-microphone', 'permission-combined', 'permission-combined-denied', 'alert-dismiss']
+fixture = Path(__file__).with_name('CompletionTests.swift').read_text().replace('__ORIGIN_HELPERS__', helpers).replace('__METHODS__', source[start:end])
+cases = ['confirm-no-window', 'confirm-accept', 'confirm-cancel', 'confirm-dismiss', 'confirm-accept-dismiss', 'confirm-cancel-dismiss', 'open-no-window', 'open-cancel', 'open-files', 'permission-no-window', 'permission-owner-gone', 'permission-dismiss', 'permission-allow-dismiss', 'permission-cancel-dismiss', 'permission-denied', 'permission-cached', 'permission-no-bot', 'permission-unknown', 'permission-microphone', 'permission-combined', 'permission-combined-denied', 'permission-cross-origin', 'permission-child-frame', 'permission-navigated', 'alert-dismiss']
 with tempfile.TemporaryDirectory(prefix='webkit-completions-') as temp:
     directory = Path(temp)
     (directory / 'main.swift').write_text(fixture)

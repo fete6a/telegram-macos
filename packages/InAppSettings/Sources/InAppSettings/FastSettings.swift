@@ -286,14 +286,14 @@ public class FastSettings {
     }
     
     @available(macOS 12.0, *)
-    public static func botAccessTo(_ type: WKMediaCaptureType, peerId: PeerId) -> Bool {
-        let value = UserDefaults.standard.value(forKey: "wk2_bot_access_\(type.rawValue)_\(peerId.toInt64())") as? Bool
-        
-        if let value = value {
-            return value
-        } else {
-            return false
-        }
+    private static func botMediaAccessKey(_ type: WKMediaCaptureType, peerId: PeerId, accountId: PeerId, origin: String) -> String {
+        let encodedOrigin = Data(origin.utf8).base64EncodedString()
+        return "wk2_bot_access_v2_\(type.rawValue)_\(accountId.toInt64())_\(peerId.toInt64())_\(encodedOrigin)"
+    }
+
+    @available(macOS 12.0, *)
+    public static func botAccessTo(_ type: WKMediaCaptureType, peerId: PeerId, accountId: PeerId, origin: String) -> Bool {
+        return UserDefaults.standard.bool(forKey: botMediaAccessKey(type, peerId: peerId, accountId: accountId, origin: origin))
     }
     
     public static func allowBotAccessToBiometric(peerId: PeerId, accountId: PeerId) {
@@ -308,8 +308,8 @@ public class FastSettings {
     
     
     @available(macOS 12.0, *)
-    public static func allowBotAccessTo(_ type: WKMediaCaptureType, peerId: PeerId) {
-        UserDefaults.standard.setValue(true, forKey: "wk2_bot_access_\(type.rawValue)_\(peerId.toInt64())")
+    public static func allowBotAccessTo(_ type: WKMediaCaptureType, peerId: PeerId, accountId: PeerId, origin: String) {
+        UserDefaults.standard.setValue(true, forKey: botMediaAccessKey(type, peerId: peerId, accountId: accountId, origin: origin))
         UserDefaults.standard.synchronize()
     }
     

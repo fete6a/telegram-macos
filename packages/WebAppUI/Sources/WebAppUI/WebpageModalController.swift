@@ -60,6 +60,13 @@ private func webAppOrigin(securityOrigin: WKSecurityOrigin) -> String? {
     return webAppOrigin(scheme: securityOrigin.protocol, host: securityOrigin.host, port: securityOrigin.port == 0 ? nil : securityOrigin.port)
 }
 
+private func webAppMediaCaptureOrigin(requestingOrigin: String?, frameOrigin: String?, currentOrigin: String?, isMainFrame: Bool) -> String? {
+    guard isMainFrame, let requestingOrigin, requestingOrigin == frameOrigin, requestingOrigin == currentOrigin else {
+        return nil
+    }
+    return requestingOrigin
+}
+
 private func webAppJsStringLiteral(_ value: String) -> String {
     if let data = try? JSONSerialization.data(withJSONObject: [value], options: []), let string = String(data: data, encoding: .utf8), string.hasPrefix("["), string.hasSuffix("]") {
         return String(string.dropFirst().dropLast())
@@ -1539,35 +1546,60 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
     
     @available(macOS 12.0, *)
     public func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping(WKPermissionDecision)->Void) {
-        
-        _ = self.context
         var completion: ((WKPermissionDecision) -> Void)? = decisionHandler
         let complete: (WKPermissionDecision) -> Void = { decision in
             let handler = completion
             completion = nil
             handler?(decision)
         }
+
+        let currentPermissionOrigin: () -> String? = { [weak webView] in
+            return webAppMediaCaptureOrigin(
+                requestingOrigin: webAppOrigin(securityOrigin: origin),
+                frameOrigin: webAppOrigin(securityOrigin: frame.securityOrigin),
+                currentOrigin: webView?.url.flatMap { webAppOrigin(url: $0) },
+                isMainFrame: frame.isMainFrame
+            )
+        }
+        guard let permissionOrigin = currentPermissionOrigin() else {
+            complete(.deny)
+            return
+        }
         
         let request:(Peer)->Void = { [weak self] peer in
-            if FastSettings.botAccessTo(type, peerId: peer.id) {
+            guard let self, currentPermissionOrigin() == permissionOrigin else {
+                complete(.deny)
+                return
+            }
+            let accountId = self.context.peerId
+            if FastSettings.botAccessTo(type, peerId: peer.id, accountId: accountId, origin: permissionOrigin) {
                 complete(.grant)
             } else {
-                let runConfirm:()->Void = {
-                    let info: String
+                let runConfirm:()->Void = { [weak self] in
+                    guard let self, currentPermissionOrigin() == permissionOrigin else {
+                        complete(.deny)
+                        return
+                    }
+                    let accessDescription: String
                     switch type {
                     case .camera:
-                        info = strings().webAppAccessVideo(peer.displayTitle)
+                        accessDescription = strings().webAppAccessVideo(peer.displayTitle)
                     case .microphone:
-                        info = strings().webAppAccessAudio(peer.displayTitle)
+                        accessDescription = strings().webAppAccessAudio(peer.displayTitle)
                     case .cameraAndMicrophone:
-                        info = strings().webAppAccessAudioVideo(peer.displayTitle)
+                        accessDescription = strings().webAppAccessAudioVideo(peer.displayTitle)
                     @unknown default:
-                        info = "unknown"
+                        accessDescription = "unknown"
                     }
-                    if let window = self?.window {
-                        verifyAlert_button(for: window, information: info, ok: strings().webAppAccessAllow, successHandler: { _ in
+                    let information = "\(accessDescription)\n\n\(permissionOrigin)"
+                    if let window = self.window {
+                        verifyAlert_button(for: window, information: information, ok: strings().webAppAccessAllow, successHandler: { [weak self] _ in
+                            guard let self, currentPermissionOrigin() == permissionOrigin else {
+                                complete(.deny)
+                                return
+                            }
+                            FastSettings.allowBotAccessTo(type, peerId: peer.id, accountId: self.context.peerId, origin: permissionOrigin)
                             complete(.grant)
-                            FastSettings.allowBotAccessTo(type, peerId: peer.id)
                         }, cancelHandler: {
                             complete(.deny)
                         }, onDeinit: {
