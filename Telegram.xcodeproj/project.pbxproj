@@ -762,6 +762,7 @@
 		C232EA981E1D07E700C4D38C /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C232EA971E1D07E700C4D38C /* ShareViewController.swift */; };
 		C232EA9B1E1D07E700C4D38C /* ShareViewController.xib in Resources */ = {isa = PBXBuildFile; fileRef = C232EA991E1D07E700C4D38C /* ShareViewController.xib */; };
 		C232EAB01E1D110500C4D38C /* SESelectController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C232EAAF1E1D110500C4D38C /* SESelectController.swift */; };
+		58B303B2867A24C1F8C7615D /* ShareAttachmentAcquisition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58B303B2867A24C1F8C7615C /* ShareAttachmentAcquisition.swift */; };
 		C232EAC21E1D448C00C4D38C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D098C71A1D7E175A007784E4 /* Assets.xcassets */; };
 		C232EAC91E1D536200C4D38C /* SEModalProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C232EAC81E1D536200C4D38C /* SEModalProgressView.swift */; };
 		C23BC36E1E9ACCD100D79F92 /* SEUnauthorizedViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23BC36D1E9ACCD100D79F92 /* SEUnauthorizedViewController.swift */; };
@@ -1823,6 +1824,7 @@
 		C232EA9A1E1D07E700C4D38C /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.xib; name = Base; path = Base.lproj/ShareViewController.xib; sourceTree = "<group>"; };
 		C232EA9C1E1D07E700C4D38C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C232EAAF1E1D110500C4D38C /* SESelectController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SESelectController.swift; sourceTree = "<group>"; };
+		58B303B2867A24C1F8C7615C /* ShareAttachmentAcquisition.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ShareAttachmentAcquisition.swift; sourceTree = "<group>"; };
 		C232EAC61E1D4BD700C4D38C /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		C232EAC81E1D536200C4D38C /* SEModalProgressView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SEModalProgressView.swift; sourceTree = "<group>"; };
 		C23BC36D1E9ACCD100D79F92 /* SEUnauthorizedViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SEUnauthorizedViewController.swift; sourceTree = "<group>"; };
@@ -3051,6 +3053,7 @@
 			isa = PBXGroup;
 			children = (
 				C232EAB11E1D113C00C4D38C /* ui */,
+				58B303B2867A24C1F8C7615C /* ShareAttachmentAcquisition.swift */,
 				C232EA971E1D07E700C4D38C /* ShareViewController.swift */,
 				C232EA931E1D07E700C4D38C /* Supporting Files */,
 				C291E2721E8AFA2C00D397BA /* ShareApplicationContext.swift */,
@@ -4667,6 +4670,7 @@
 				270376002C9DBCFE003EC235 /* SEUIInputView.swift in Sources */,
 				C232EA981E1D07E700C4D38C /* ShareViewController.swift in Sources */,
 				C23BC36E1E9ACCD100D79F92 /* SEUnauthorizedViewController.swift in Sources */,
+				58B303B2867A24C1F8C7615D /* ShareAttachmentAcquisition.swift in Sources */,
 				C232EAB01E1D110500C4D38C /* SESelectController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -614,7 +614,8 @@ class ShareObject {
         var signals:[Signal<Float, NoError>] = []
                 
         var k:Int = 0
-        let total = shareContext.inputItems.reduce(0) { (current, item) -> Int in
+        var didStartSending = false
+        let total = entries.count * shareContext.inputItems.reduce(0) { (current, item) -> Int in
             if let item = item as? NSExtensionItem {
                 if let _ = item.attributedContentText?.string {
                     return current + 1
@@ -627,7 +628,8 @@ class ShareObject {
         
         func requestIfNeeded() {
             Queue.mainQueue().async {
-                if k == total {
+                if k == total && !didStartSending {
+                    didStartSending = true
                     self.progressView.frame = view.bounds
                     view.addSubview(self.progressView)
                     
@@ -674,34 +676,14 @@ class ShareObject {
                         requestIfNeeded()
                     } else if let attachments = item.attachments {
                         
-                        for i in 0 ..< attachments.count {
-                            attachments[i].loadItem(forTypeIdentifier: kUTTypeURL as String, options: nil, completionHandler: { (coding, error) in
-                                if let url = coding as? URL {
-                                    if !url.isFileURL {
-                                        signals.append(self.sendText(url.absoluteString, to:peerId, threadId: threadId))
-                                    } else {
-                                        signals.append(self.sendMedia(url, to:peerId, threadId: threadId))
-                                    }
-                                    k += 1
-                                } else if let data = coding as? Data, let string = String(data: data, encoding: .utf8), let url = URL(string: string) {
-                                    if !url.isFileURL {
-                                        signals.append(self.sendText(url.absoluteString, to:peerId, threadId: threadId))
-                                    } else {
-                                        signals.append(self.sendMedia(url, to:peerId, threadId: threadId))
-                                    }
-                                    k += 1
+                        for attachment in attachments {
+                            self.loadAttachment(attachment, to: peerId, threadId: threadId, completion: { signal in
+                                if let signal = signal {
+                                    signals.append(signal)
                                 }
+                                k += 1
                                 requestIfNeeded()
                             })
-                            if k != total {
-                                attachments[i].loadItem(forTypeIdentifier: kUTTypeImage as String, options: nil, completionHandler: { (coding, error) in
-                                    if let data = (coding as? NSImage)?.tiffRepresentation {
-                                        signals.append(self.sendMedia(nil, data, to:peerId, threadId: threadId))
-                                        k += 1
-                                        requestIfNeeded()
-                                    }
-                                })
-                            }
                         }
                     }
                 }
@@ -712,11 +694,82 @@ class ShareObject {
     
     
     private let queue:Queue = Queue(name: "proccessShareFilesQueue")
+
+    private func loadAttachment(_ attachment: NSItemProvider, to peerId: PeerId, threadId: Int32?, completion: @escaping (Signal<Float, NoError>?) -> Void) {
+        if attachment.hasItemConformingToTypeIdentifier(kUTTypeFileURL as String) {
+            self.loadFileRepresentation(attachment, typeIdentifier: kUTTypeFileURL as String, to: peerId, threadId: threadId, completion: completion)
+        } else if attachment.hasItemConformingToTypeIdentifier(kUTTypeURL as String) {
+            attachment.loadItem(forTypeIdentifier: kUTTypeURL as String, options: nil, completionHandler: { value, _ in
+                if let text = ShareAttachmentAcquisition.text(from: value) {
+                    self.completeAttachment(self.sendText(text, to: peerId, threadId: threadId), completion: completion)
+                } else if ShareAttachmentAcquisition.isFileURL(value) {
+                    self.completeAttachment(nil, completion: completion)
+                } else if let typeIdentifier = self.fileRepresentationType(for: attachment) {
+                    self.loadFileRepresentation(attachment, typeIdentifier: typeIdentifier, to: peerId, threadId: threadId, completion: completion)
+                } else {
+                    self.completeAttachment(nil, completion: completion)
+                }
+            })
+        } else if let typeIdentifier = self.fileRepresentationType(for: attachment) {
+            self.loadFileRepresentation(attachment, typeIdentifier: typeIdentifier, to: peerId, threadId: threadId, completion: completion)
+        } else {
+            self.loadImage(attachment, to: peerId, threadId: threadId, completion: completion)
+        }
+    }
+
+    private func fileRepresentationType(for attachment: NSItemProvider) -> String? {
+        return attachment.registeredTypeIdentifiers.first(where: {
+            !UTTypeConformsTo($0 as CFString, kUTTypeURL) && !UTTypeConformsTo($0 as CFString, kUTTypeText)
+        })
+    }
+
+    private func loadFileRepresentation(_ attachment: NSItemProvider, typeIdentifier: String, to peerId: PeerId, threadId: Int32?, completion: @escaping (Signal<Float, NoError>?) -> Void) {
+        attachment.loadInPlaceFileRepresentation(forTypeIdentifier: typeIdentifier, completionHandler: { url, _, _ in
+            if let url = url {
+                if let copiedURL = ShareAttachmentAcquisition.copyProviderFile(at: url, preferredName: attachment.suggestedName) {
+                    self.completeAttachment(self.sendMedia(copiedURL, to: peerId, threadId: threadId), completion: completion)
+                } else {
+                    self.completeAttachment(nil, completion: completion)
+                }
+            } else if attachment.hasItemConformingToTypeIdentifier(kUTTypeImage as String) {
+                self.loadImage(attachment, to: peerId, threadId: threadId, completion: completion)
+            } else {
+                self.completeAttachment(nil, completion: completion)
+            }
+        })
+    }
+
+    private func loadImage(_ attachment: NSItemProvider, to peerId: PeerId, threadId: Int32?, completion: @escaping (Signal<Float, NoError>?) -> Void) {
+        guard attachment.hasItemConformingToTypeIdentifier(kUTTypeImage as String) else {
+            self.completeAttachment(nil, completion: completion)
+            return
+        }
+        attachment.loadItem(forTypeIdentifier: kUTTypeImage as String, options: nil, completionHandler: { value, _ in
+            let signal = (value as? NSImage)?.tiffRepresentation.map {
+                self.sendMedia(nil, $0, to: peerId, threadId: threadId)
+            }
+            self.completeAttachment(signal, completion: completion)
+        })
+    }
+
+    private func completeAttachment(_ signal: Signal<Float, NoError>?, completion: @escaping (Signal<Float, NoError>?) -> Void) {
+        Queue.mainQueue().async {
+            completion(signal)
+        }
+    }
     
     private func prepareMedia(_ path: URL?, _ pasteData: Data? = nil) -> Signal<StandaloneMedia, NoError> {
         return Signal { subscriber in
             
-            let data = pasteData ?? (path != nil ? try? Data(contentsOf: path!) : nil)
+            let data: Data?
+            if let pasteData = pasteData {
+                data = pasteData
+            } else if let path = path {
+                data = try? Data(contentsOf: path)
+                try? FileManager.default.removeItem(at: path.deletingLastPathComponent())
+            } else {
+                data = nil
+            }
             
             if let data = data {
                 var forceImage: Bool = false
