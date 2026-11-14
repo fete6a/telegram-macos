@@ -2,6 +2,9 @@
 
 #import <Security/Security.h>
 #import <AppKit/AppKit.h>
+#import <CommonCrypto/CommonHMAC.h>
+#import <CommonCrypto/CommonKeyDerivation.h>
+#import <string.h>
 
 #import <MurMurHash32/MurMurHash32.h>
 #import <CryptoUtils/Crypto.h>
@@ -89,8 +92,79 @@ static NSString *telegramApplicationSecretKey = @"telegramApplicationSecretKey_v
 @end
 
 
+static const uint8_t AppEncryptionEnvelopeMagic[] = {'T', 'G', 'K', 'E', 'Y', 'E', 'N', 'C'};
+static const uint32_t AppEncryptionEnvelopeVersion = 2;
+static const uint32_t AppEncryptionMinimumIterations = 600000;
+static const uint32_t AppEncryptionMaximumIterations = 10000000;
+static const uint32_t AppEncryptionCalibrationMilliseconds = 500;
+enum {
+    AppEncryptionKdfSaltLength = 16,
+    AppEncryptionIvLength = 16,
+    AppEncryptionKeyLength = 32,
+    AppEncryptionMacLength = 32,
+    AppEncryptionPayloadLength = 64,
+    AppEncryptionHeaderLength = sizeof(AppEncryptionEnvelopeMagic) + sizeof(uint32_t) + sizeof(uint32_t) + AppEncryptionKdfSaltLength + AppEncryptionIvLength,
+    AppEncryptionEnvelopeLength = AppEncryptionHeaderLength + AppEncryptionPayloadLength + AppEncryptionMacLength
+};
+
+static NSData *AppEncryptionRandomData(NSUInteger length) {
+    NSMutableData *data = [[NSMutableData alloc] initWithLength:length];
+    if (SecRandomCopyBytes(kSecRandomDefault, length, data.mutableBytes) != errSecSuccess) {
+        arc4random_buf(data.mutableBytes, length);
+    }
+    return data;
+}
+
+static NSData * _Nullable AppEncryptionDerivedKey(NSString *passcode, NSData *salt, uint32_t iterations) {
+    NSData *passwordData = [passcode dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableData *derivedKey = [[NSMutableData alloc] initWithLength:AppEncryptionKeyLength + AppEncryptionMacLength];
+    int status = CCKeyDerivationPBKDF(kCCPBKDF2, passwordData.bytes, passwordData.length, salt.bytes, salt.length, kCCPRFHmacAlgSHA256, iterations, derivedKey.mutableBytes, derivedKey.length);
+    if (status != 0) {
+        return nil;
+    }
+    return derivedKey;
+}
+
+static NSData *AppEncryptionAuthenticationCode(NSData *data, NSData *key) {
+    uint8_t result[AppEncryptionMacLength];
+    CCHmac(kCCHmacAlgSHA256, key.bytes, key.length, data.bytes, data.length, result);
+    return [[NSData alloc] initWithBytes:result length:sizeof(result)];
+}
+
+static BOOL AppEncryptionConstantTimeEqual(NSData *lhs, NSData *rhs) {
+    if (lhs.length != rhs.length) {
+        return NO;
+    }
+    const uint8_t *lhsBytes = lhs.bytes;
+    const uint8_t *rhsBytes = rhs.bytes;
+    uint8_t difference = 0;
+    for (NSUInteger index = 0; index < lhs.length; index++) {
+        difference |= lhsBytes[index] ^ rhsBytes[index];
+    }
+    return difference == 0;
+}
+
+static void AppEncryptionAppendUInt32(NSMutableData *data, uint32_t value) {
+    uint32_t bigEndianValue = CFSwapInt32HostToBig(value);
+    [data appendBytes:&bigEndianValue length:sizeof(bigEndianValue)];
+}
+
+static uint32_t AppEncryptionReadUInt32(NSData *data, NSUInteger offset) {
+    uint32_t value = 0;
+    [data getBytes:&value range:NSMakeRange(offset, sizeof(value))];
+    return CFSwapInt32BigToHost(value);
+}
+
+static BOOL AppEncryptionHasVersionedMagic(NSData *data) {
+    if (data.length < sizeof(AppEncryptionEnvelopeMagic)) {
+        return NO;
+    }
+    return memcmp(data.bytes, AppEncryptionEnvelopeMagic, sizeof(AppEncryptionEnvelopeMagic)) == 0;
+}
+
 @interface AppEncryptionParameters () {
     NSString * _Nonnull _rootPath;
+    NSString * _Nonnull _passcode;
     NSData * _Nonnull key;
     NSData * _Nonnull iv;
 }
@@ -118,6 +192,7 @@ static NSString *telegramApplicationSecretKey = @"telegramApplicationSecretKey_v
 }
 
 -(void)applyPasscode:(NSString * _Nonnull)passcode {
+    self->_passcode = [passcode copy];
     NSData *keyData = [passcode dataUsingEncoding:NSUTF8StringEncoding];
     NSData *sha512 = CryptoSHA512(keyData.bytes, keyData.length);
     self->key = [sha512 subdataWithRange:NSMakeRange(0, 32)];
@@ -125,29 +200,14 @@ static NSString *telegramApplicationSecretKey = @"telegramApplicationSecretKey_v
 }
 
 -(void)initializeIfNeeded {
-    NSData *currentData = [NSData dataWithContentsOfFile:self.path];
-    NSMutableData *resultData = nil;
-    if (currentData != nil && currentData.length == 64) {
-        resultData = [currentData mutableCopy];
+    if ([NSFileManager.defaultManager fileExistsAtPath:self.path] || [NSFileManager.defaultManager fileExistsAtPath:self.legacyPath]) {
+        return;
     }
-    if (resultData == nil) {
-        NSMutableData *randomData = [[NSMutableData alloc] initWithLength:32 + 16];
-        if (SecRandomCopyBytes(kSecRandomDefault, randomData.length, randomData.mutableBytes) != errSecSuccess) {
-            arc4random_buf(randomData.mutableBytes, randomData.length);
-        }
-        resultData = randomData;
-        
-        int hash = murMurHash32Data(resultData);
-        NSMutableData *hashData = [[NSMutableData alloc] initWithBytes:&hash length:4];
-        [resultData appendData:hashData];
-
-        while (resultData.length % 16 != 0) {
-            int zero = 0;
-            [resultData appendBytes:&zero length:1];
-        }
-        NSData *encrypted = CryptoAES(YES, self->key, self->iv, resultData);
-        [encrypted writeToFile:self.path atomically:true];
-    }
+    NSData *parametersData = AppEncryptionRandomData(32 + 16);
+    NSData *keyData = [parametersData subdataWithRange:NSMakeRange(0, 32)];
+    NSData *saltData = [parametersData subdataWithRange:NSMakeRange(32, 16)];
+    DeviceSpecificEncryptionParameters *parameters = [[DeviceSpecificEncryptionParameters alloc] initWithKey:keyData salt:saltData];
+    [self writeVersionedParameters:parameters passcode:self->_passcode];
 }
 
 -(NSString *)path {
@@ -160,14 +220,16 @@ static NSString *telegramApplicationSecretKey = @"telegramApplicationSecretKey_v
 
 -(void)change:(NSString * _Nonnull)passcode {
     DeviceSpecificEncryptionParameters *parameters = [self decrypt];
-    [self applyPasscode:passcode];
-    [self reencrypt: parameters];
-
+    if (parameters != nil && [self writeVersionedParameters:parameters passcode:passcode]) {
+        [self applyPasscode:passcode];
+    }
 }
 -(void)remove {
     DeviceSpecificEncryptionParameters *parameters = [self decrypt];
-    [self applyPasscode:[AppEncryptionParameters defaultKey]];
-    [self reencrypt: parameters];
+    NSString *passcode = [AppEncryptionParameters defaultKey];
+    if (parameters != nil && [self writeVersionedParameters:parameters passcode:passcode]) {
+        [self applyPasscode:passcode];
+    }
 }
 
 -(NSData * _Nullable)encryptData:(NSData * _Nonnull)data {
@@ -178,71 +240,124 @@ static NSString *telegramApplicationSecretKey = @"telegramApplicationSecretKey_v
 }
 
 -(void)upgradeLegacyIfNeeded {
-    NSData *currentData = [NSData dataWithContentsOfFile:self.legacyPath];
-    NSData *resultData = nil;
-    if (currentData != nil && currentData.length == 32 + 16) {
-        resultData = currentData;
+    if ([NSFileManager.defaultManager fileExistsAtPath:self.path]) {
+        return;
     }
-    if (resultData != nil) {
-        int hash = murMurHash32Data(resultData);
-        
-        NSMutableData *hashData = [[NSMutableData alloc] initWithBytes:&hash length:4];
-       
-        
-        NSData *key = [resultData subdataWithRange:NSMakeRange(0, 32)];
-        NSData *salt = [resultData subdataWithRange:NSMakeRange(32, 16)];
-
-        NSMutableData *finalData = [[NSMutableData alloc] init];
-        
-        [finalData appendData:key];
-        [finalData appendData:salt];
-        [finalData appendData:hashData];
-        
-        
-        while (finalData.length % 16 != 0) {
-            int zero = 0;
-            [finalData appendBytes:&zero length:1];
-        }
-        
-        NSData *encrypted = CryptoAES(YES, self->key, self->iv, finalData);
-        [encrypted writeToFile:self.path atomically:YES];
+    NSData *currentData = [NSData dataWithContentsOfFile:self.legacyPath];
+    if (currentData == nil || currentData.length != 32 + 16) {
+        return;
+    }
+    NSData *keyData = [currentData subdataWithRange:NSMakeRange(0, 32)];
+    NSData *saltData = [currentData subdataWithRange:NSMakeRange(32, 16)];
+    DeviceSpecificEncryptionParameters *parameters = [[DeviceSpecificEncryptionParameters alloc] initWithKey:keyData salt:saltData];
+    if ([self writeVersionedParameters:parameters passcode:self->_passcode]) {
         [[NSFileManager defaultManager] removeItemAtPath:self.legacyPath error:nil];
     }
 }
 
--(void)reencrypt:(DeviceSpecificEncryptionParameters * _Nullable)parameters {
-    
-    if (parameters == nil) {
-        [[NSFileManager defaultManager] removeItemAtPath:self.path error:nil];
-        [self initializeIfNeeded];
+-(NSData * _Nullable)payloadForParameters:(DeviceSpecificEncryptionParameters *)parameters {
+    if (parameters.key.length != 32 || parameters.salt.length != 16) {
+        return nil;
     }
-    
-    NSMutableData *resultData = [[NSMutableData alloc] init];
-    [resultData appendData:parameters.key];
-    [resultData appendData:parameters.salt];
-    
-    int hash = murMurHash32Data(resultData);
-    
-    NSMutableData *hashData = [[NSMutableData alloc] initWithBytes:&hash length:4];
-    
-    
-    NSData *key = [resultData subdataWithRange:NSMakeRange(0, 32)];
-    NSData *salt = [resultData subdataWithRange:NSMakeRange(32, 16)];
-    
-    NSMutableData *finalData = [[NSMutableData alloc] init];
-    
-    [finalData appendData:key];
-    [finalData appendData:salt];
-    [finalData appendData:hashData];
-    
-    
-    while (finalData.length % 16 != 0) {
-        int zero = 0;
-        [finalData appendBytes:&zero length:1];
+    NSMutableData *payload = [[NSMutableData alloc] init];
+    [payload appendData:parameters.key];
+    [payload appendData:parameters.salt];
+    int hash = murMurHash32Data(payload);
+    [payload appendBytes:&hash length:sizeof(hash)];
+    [payload setLength:AppEncryptionPayloadLength];
+    return payload;
+}
+
+-(DeviceSpecificEncryptionParameters * _Nullable)parametersFromPayload:(NSData *)payload {
+    if (payload.length != AppEncryptionPayloadLength) {
+        return nil;
     }
-    
-    NSData *encrypted = CryptoAES(YES, self->key, self->iv, finalData);
-    [encrypted writeToFile:self.path atomically:YES];
+    NSData *keyData = [payload subdataWithRange:NSMakeRange(0, 32)];
+    NSData *saltData = [payload subdataWithRange:NSMakeRange(32, 16)];
+    int storedHash = 0;
+    [payload getBytes:&storedHash range:NSMakeRange(32 + 16, sizeof(storedHash))];
+    int computedHash = murMurHash32Data([payload subdataWithRange:NSMakeRange(0, 32 + 16)]);
+    if (storedHash != computedHash) {
+        return nil;
+    }
+    return [[DeviceSpecificEncryptionParameters alloc] initWithKey:keyData salt:saltData];
+}
+
+-(uint32_t)iterationsForPasscode:(NSString *)passcode {
+    NSData *passwordData = [passcode dataUsingEncoding:NSUTF8StringEncoding];
+    uint32_t calibratedIterations = CCCalibratePBKDF(kCCPBKDF2, passwordData.length, AppEncryptionKdfSaltLength, kCCPRFHmacAlgSHA256, AppEncryptionKeyLength + AppEncryptionMacLength, AppEncryptionCalibrationMilliseconds);
+    return MIN(MAX(calibratedIterations, AppEncryptionMinimumIterations), AppEncryptionMaximumIterations);
+}
+
+-(NSData * _Nullable)versionedEnvelopeForParameters:(DeviceSpecificEncryptionParameters *)parameters passcode:(NSString *)passcode {
+    NSData *payload = [self payloadForParameters:parameters];
+    if (payload == nil) {
+        return nil;
+    }
+    NSData *kdfSalt = AppEncryptionRandomData(AppEncryptionKdfSaltLength);
+    NSData *encryptionIv = AppEncryptionRandomData(AppEncryptionIvLength);
+    uint32_t iterations = [self iterationsForPasscode:passcode];
+    NSData *derivedKey = AppEncryptionDerivedKey(passcode, kdfSalt, iterations);
+    if (derivedKey == nil) {
+        return nil;
+    }
+    NSData *encryptionKey = [derivedKey subdataWithRange:NSMakeRange(0, AppEncryptionKeyLength)];
+    NSData *authenticationKey = [derivedKey subdataWithRange:NSMakeRange(AppEncryptionKeyLength, AppEncryptionMacLength)];
+    NSData *encryptedPayload = CryptoAES(YES, encryptionKey, encryptionIv, payload);
+    if (encryptedPayload == nil || encryptedPayload.length != AppEncryptionPayloadLength) {
+        return nil;
+    }
+    NSMutableData *envelope = [[NSMutableData alloc] init];
+    [envelope appendBytes:AppEncryptionEnvelopeMagic length:sizeof(AppEncryptionEnvelopeMagic)];
+    AppEncryptionAppendUInt32(envelope, AppEncryptionEnvelopeVersion);
+    AppEncryptionAppendUInt32(envelope, iterations);
+    [envelope appendData:kdfSalt];
+    [envelope appendData:encryptionIv];
+    [envelope appendData:encryptedPayload];
+    [envelope appendData:AppEncryptionAuthenticationCode(envelope, authenticationKey)];
+    return envelope;
+}
+
+-(BOOL)writeEnvelopeData:(NSData *)data {
+    return [data writeToFile:self.path options:NSDataWritingAtomic error:nil];
+}
+
+-(BOOL)writeVersionedParameters:(DeviceSpecificEncryptionParameters *)parameters passcode:(NSString *)passcode {
+    NSData *envelope = [self versionedEnvelopeForParameters:parameters passcode:passcode];
+    if (envelope == nil) {
+        return NO;
+    }
+    return [self writeEnvelopeData:envelope];
+}
+
+-(DeviceSpecificEncryptionParameters * _Nullable)decryptVersionedEnvelope:(NSData *)envelope {
+    if (envelope.length != AppEncryptionEnvelopeLength) {
+        return nil;
+    }
+    NSUInteger versionOffset = sizeof(AppEncryptionEnvelopeMagic);
+    uint32_t version = AppEncryptionReadUInt32(envelope, versionOffset);
+    uint32_t iterations = AppEncryptionReadUInt32(envelope, versionOffset + sizeof(uint32_t));
+    if (version != AppEncryptionEnvelopeVersion || iterations < AppEncryptionMinimumIterations || iterations > AppEncryptionMaximumIterations) {
+        return nil;
+    }
+    NSUInteger saltOffset = versionOffset + sizeof(uint32_t) + sizeof(uint32_t);
+    NSData *kdfSalt = [envelope subdataWithRange:NSMakeRange(saltOffset, AppEncryptionKdfSaltLength)];
+    NSData *encryptionIv = [envelope subdataWithRange:NSMakeRange(saltOffset + AppEncryptionKdfSaltLength, AppEncryptionIvLength)];
+    NSData *derivedKey = AppEncryptionDerivedKey(self->_passcode, kdfSalt, iterations);
+    if (derivedKey == nil) {
+        return nil;
+    }
+    NSData *encryptionKey = [derivedKey subdataWithRange:NSMakeRange(0, AppEncryptionKeyLength)];
+    NSData *authenticationKey = [derivedKey subdataWithRange:NSMakeRange(AppEncryptionKeyLength, AppEncryptionMacLength)];
+    NSData *authenticatedData = [envelope subdataWithRange:NSMakeRange(0, AppEncryptionEnvelopeLength - AppEncryptionMacLength)];
+    NSData *storedAuthenticationCode = [envelope subdataWithRange:NSMakeRange(AppEncryptionEnvelopeLength - AppEncryptionMacLength, AppEncryptionMacLength)];
+    NSData *computedAuthenticationCode = AppEncryptionAuthenticationCode(authenticatedData, authenticationKey);
+    if (!AppEncryptionConstantTimeEqual(storedAuthenticationCode, computedAuthenticationCode)) {
+        return nil;
+    }
+    NSData *encryptedPayload = [envelope subdataWithRange:NSMakeRange(AppEncryptionHeaderLength, AppEncryptionPayloadLength)];
+    NSData *payload = CryptoAES(NO, encryptionKey, encryptionIv, encryptedPayload);
+    return [self parametersFromPayload:payload];
 }
 
 -(BOOL)hasPasscode {
@@ -252,25 +367,21 @@ static NSString *telegramApplicationSecretKey = @"telegramApplicationSecretKey_v
 
 -(DeviceSpecificEncryptionParameters * _Nullable)decrypt {
     NSData *currentData = [NSData dataWithContentsOfFile:self.path];
-    NSData *decrypted = CryptoAES(NO, self->key, self->iv, currentData);
-    if (decrypted == nil || decrypted.length < 32 + 16 + 4) {
+    if (currentData == nil) {
         return nil;
     }
-    
-    NSData *key = [decrypted subdataWithRange:NSMakeRange(0, 32)];
-    NSData *salt = [decrypted subdataWithRange:NSMakeRange(32, 16)];;
-    
-    int innerHash = 0;
-    [decrypted getBytes:&innerHash range:NSMakeRange(32 + 16, 4)];
-    
-    int hash = murMurHash32Data([decrypted subdataWithRange:NSMakeRange(0, 32 + 16)]);
-    
-    if (innerHash == hash) {
-        return [[DeviceSpecificEncryptionParameters alloc] initWithKey:key salt:salt];
+    if (AppEncryptionHasVersionedMagic(currentData)) {
+        return [self decryptVersionedEnvelope:currentData];
     }
-    
-    return nil;
-    
+    if (currentData.length != AppEncryptionPayloadLength) {
+        return nil;
+    }
+    NSData *decrypted = CryptoAES(NO, self->key, self->iv, currentData);
+    DeviceSpecificEncryptionParameters *parameters = [self parametersFromPayload:decrypted];
+    if (parameters != nil) {
+        [self writeVersionedParameters:parameters passcode:self->_passcode];
+    }
+    return parameters;
 }
 
 @end

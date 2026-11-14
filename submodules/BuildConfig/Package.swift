@@ -29,5 +29,13 @@ let package = Package(
             cSettings: [
                 .headerSearchPath("include")
             ]),
+        .testTarget(
+            name: "BuildConfigTests",
+            dependencies: [
+                "BuildConfig",
+                .product(name: "CryptoUtils", package: "CryptoUtils", condition: nil),
+                .product(name: "MurMurHash32", package: "MurMurHash32", condition: nil),
+            ],
+            path: "Tests/BuildConfigTests"),
     ]
 )
