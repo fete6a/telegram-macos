@@ -115,6 +115,9 @@ public final class HLSVideoContent : UniversalVideoContent {
         guard let fileSet = minimizedHLSQuality(file: file, initialQuality: initialQuality) else {
             return .single(nil)
         }
+        guard let resourceSize = fileSet.file.media.size, resourceSize > 0 else {
+            return .single(nil)
+        }
         
         let playlistData: Signal<Range<Int64>?, NoError> = Signal { subscriber in
             var fetchDisposable: Disposable?
@@ -126,7 +129,7 @@ public final class HLSVideoContent : UniversalVideoContent {
                 if !data.complete {
                     return
                 }
-                guard let data = try? Data(contentsOf: URL(fileURLWithPath: data.path)), let text = String(data: data, encoding: .utf8), let playlist = try? HLSMediaPlaylist.parse(text) else {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: data.path)), let text = String(data: data, encoding: .utf8), let playlist = try? HLSMediaPlaylist.parse(text, resourceSize: resourceSize) else {
                     subscriber.putNext(nil)
                     subscriber.putCompletion()
                     return

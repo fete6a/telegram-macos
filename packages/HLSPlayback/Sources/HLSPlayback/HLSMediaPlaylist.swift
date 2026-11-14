@@ -49,7 +49,7 @@ public struct HLSMediaPlaylist: Equatable {
         return self.totalDuration / Double(self.segments.count)
     }
     
-    public static func parse(_ text: String) throws -> HLSMediaPlaylist {
+    public static func parse(_ text: String, resourceSize: Int64? = nil) throws -> HLSMediaPlaylist {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> Substring in
             if line.hasSuffix("\r") {
                 return line.dropLast()
@@ -78,6 +78,14 @@ public struct HLSMediaPlaylist: Equatable {
         var totalDuration: Double = 0.0
         var pendingDuration: Double?
         var pendingByteRange: (length: Int64, offset: Int64?)?
+
+        func makeByteRange(_ byteRange: (length: Int64, offset: Int64?), start: Int64, tag: String) throws -> Range<Int64> {
+            let (end, overflow) = start.addingReportingOverflow(byteRange.length)
+            guard byteRange.length > 0, !overflow, resourceSize.map({ end <= $0 }) ?? true else {
+                throw HLSPlaylistError.malformedTag(tag)
+            }
+            return start ..< end
+        }
         
         func noteResource(_ uri: String) throws {
             if let resourceURI {
@@ -102,8 +110,12 @@ public struct HLSMediaPlaylist: Equatable {
                 }
                 let start = byteRange.offset ?? segments.last?.byteRange.upperBound ?? 0
                 let duration = pendingDuration ?? 0.0
-                segments.append(Segment(index: segments.count, start: totalDuration, duration: duration, byteRange: start ..< (start + byteRange.length)))
-                totalDuration += duration
+                let nextTotalDuration = totalDuration + duration
+                guard nextTotalDuration.isFinite else {
+                    throw HLSPlaylistError.malformedTag("EXTINF")
+                }
+                segments.append(Segment(index: segments.count, start: totalDuration, duration: duration, byteRange: try makeByteRange(byteRange, start: start, tag: "EXT-X-BYTERANGE")))
+                totalDuration = nextTotalDuration
                 pendingDuration = nil
                 pendingByteRange = nil
                 continue
@@ -113,7 +125,7 @@ public struct HLSMediaPlaylist: Equatable {
             switch tag {
             case "#EXTINF":
                 let durationString = value.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-                guard let duration = Double(durationString), duration.isFinite, duration >= 0.0 else {
+                guard let duration = Double(durationString), duration.isFinite, duration >= 0.0, duration < Double(Int.max) else {
                     throw HLSPlaylistError.malformedTag("EXTINF")
                 }
                 pendingDuration = duration
@@ -134,7 +146,7 @@ public struct HLSMediaPlaylist: Equatable {
                         throw HLSPlaylistError.malformedTag("EXT-X-MAP")
                     }
                     let start = byteRange.offset ?? 0
-                    initSegment = start ..< (start + byteRange.length)
+                    initSegment = try makeByteRange(byteRange, start: start, tag: "EXT-X-MAP")
                 }
             case "#EXT-X-VERSION":
                 if version != nil {

@@ -151,7 +151,7 @@ final class HLSNativePlaylistLoader {
         }
         let playlist: HLSMediaPlaylist
         do {
-            playlist = try HLSMediaPlaylist.parse(text)
+            playlist = try HLSMediaPlaylist.parse(text, resourceSize: file.size)
         } catch let error {
             self.onLog?("playlist rejected level=\(level) error=\(error)")
             self.reject(level: level)

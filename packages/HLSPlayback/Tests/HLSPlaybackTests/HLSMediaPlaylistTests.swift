@@ -78,6 +78,56 @@ final class HLSMediaPlaylistTests: XCTestCase {
     func testRejectsTwoResources() {
         self.assertParseError(Fixtures.twoResources, .multipleResources)
     }
+
+    func testRejectsOverflowingExplicitSegmentRange() {
+        let text = Fixtures.realShape.replacingOccurrences(of: "436353@1552", with: "9223372036854775807@1")
+        self.assertParseError(text, .malformedTag("EXT-X-BYTERANGE"))
+    }
+
+    func testRejectsOverflowingImplicitSegmentRange() {
+        let text = """
+#EXTM3U
+#EXT-X-MAP:URI="mtproto:42",BYTERANGE="1@0"
+#EXTINF:1
+#EXT-X-BYTERANGE:1@9223372036854775806
+mtproto:42
+#EXTINF:1
+#EXT-X-BYTERANGE:1
+mtproto:42
+"""
+        self.assertParseError(text, .malformedTag("EXT-X-BYTERANGE"))
+    }
+
+    func testRejectsOverflowingInitRange() {
+        let text = Fixtures.realShape.replacingOccurrences(of: "1420@0", with: "9223372036854775807@1")
+        self.assertParseError(text, .malformedTag("EXT-X-MAP"))
+    }
+
+    func testRejectsInvalidRangeLengths() {
+        let zero = Fixtures.realShape.replacingOccurrences(of: "436353@1552", with: "0@1552")
+        self.assertParseError(zero, .malformedTag("EXT-X-BYTERANGE"))
+        let negative = Fixtures.realShape.replacingOccurrences(of: "436353@1552", with: "-1@1552")
+        self.assertParseError(negative, .malformedTag("EXT-X-BYTERANGE"))
+    }
+
+    func testRejectsRangeBeyondResourceSize() {
+        let text = Fixtures.realShape.replacingOccurrences(of: "436353@1552", with: "1@2163625")
+        XCTAssertThrowsError(try HLSMediaPlaylist.parse(text, resourceSize: 2163625)) { error in
+            XCTAssertEqual(error as? HLSPlaylistError, .malformedTag("EXT-X-BYTERANGE"))
+        }
+    }
+
+    func testAcceptsRangesWithinResourceSize() throws {
+        let p = try HLSMediaPlaylist.parse(Fixtures.realShape, resourceSize: 2163625)
+        XCTAssertEqual(p.segments.last?.byteRange.upperBound, 2163625)
+    }
+
+    func testRejectsUnrepresentableDerivedTargetDuration() {
+        let text = Fixtures.realShape
+            .replacingOccurrences(of: "#EXT-X-TARGETDURATION:5\n", with: "")
+            .replacingOccurrences(of: "#EXTINF:5\n", with: "#EXTINF:1e308\n")
+        self.assertParseError(text, .malformedTag("EXTINF"))
+    }
     
     // hls.js skips a UTF-8 BOM and blank lines before #EXTM3U.
     func testAcceptsLeadingBOMAndBlankLines() throws {
