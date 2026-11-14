@@ -35,11 +35,11 @@ func isAgeVerificationPassed(reportedPassed: Bool, reportedAge: Double, minimumA
     return reportedPassed && minimumAge <= Int32(reportedAge)
 }
 
-private func webAppOrigin(url: URL) -> String? {
+func webAppOrigin(url: URL) -> String? {
     return webAppOrigin(scheme: url.scheme, host: url.host, port: url.port)
 }
 
-private func webAppOrigin(scheme: String?, host: String?, port: Int?) -> String? {
+func webAppOrigin(scheme: String?, host: String?, port: Int?) -> String? {
     guard let scheme = scheme?.lowercased(), !scheme.isEmpty, let host = host?.lowercased(), !host.isEmpty else {
         return nil
     }
@@ -74,7 +74,7 @@ private func webAppJsStringLiteral(_ value: String) -> String {
     return "\"\""
 }
 
-private func webAppSecuredEventProxySource(trustedOrigin: String) -> String {
+func webAppSecuredEventProxySource(trustedOrigin: String) -> String {
     return """
     (function() {
         if (window.location.origin !== \(webAppJsStringLiteral(trustedOrigin))) {
@@ -85,6 +85,34 @@ private func webAppSecuredEventProxySource(trustedOrigin: String) -> String {
             window.webkit.messageHandlers.performAction.postMessage({'eventName': eventName, 'eventData': eventData});
         };
         window.TelegramWebviewProxy = new TelegramWebviewProxyProto();
+    })();
+    """
+}
+
+func webAppShouldAcceptMessage(isMainFrame: Bool, messageOrigin: String?, currentOrigin: String?, trustedOrigin: String?) -> Bool {
+    guard isMainFrame, let trustedOrigin, messageOrigin == trustedOrigin else {
+        return false
+    }
+    if let currentOrigin {
+        return currentOrigin == trustedOrigin
+    }
+    return true
+}
+
+func webAppShouldDeliverEvent(currentOrigin: String?, trustedOrigin: String?) -> Bool {
+    guard let currentOrigin, let trustedOrigin else {
+        return false
+    }
+    return currentOrigin == trustedOrigin
+}
+
+func webAppSecuredEventSource(name: String, data: String?, trustedOrigin: String) -> String {
+    return """
+    (function() {
+        if (window.location.origin !== \(webAppJsStringLiteral(trustedOrigin))) {
+            return;
+        }
+        window.TelegramGameProxy.receiveEvent(\(webAppJsStringLiteral(name)), \(data ?? "null"));
     })();
     """
 }
@@ -1290,13 +1318,6 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
     }
     
     public override func initializer() -> NSView {
-        
-        let js = "var TelegramWebviewProxyProto = function() {}; " +
-        "TelegramWebviewProxyProto.prototype.postEvent = function(eventName, eventData) { " +
-        "window.webkit.messageHandlers.performAction.postMessage({'eventName': eventName, 'eventData': eventData}); " +
-        "}; " +
-        "var TelegramWebviewProxy = new TelegramWebviewProxyProto();"
-        
         let selectionSource = "var css = '*{-webkit-touch-callout:none;} :not(input):not(textarea):not([\"contenteditable\"=\"true\"]){-webkit-user-select:none;}';"
                 + " var head = document.head || document.getElementsByTagName('head')[0];"
                 + " var style = document.createElement('style'); style.type = 'text/css';" +
@@ -1321,15 +1342,12 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
             configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         }
         
-        if let requestData, requestData.sameOrigin {
+        if let requestData {
             self.trustedOrigin = URL(string: requestData.url).flatMap { webAppOrigin(url: $0) }
             if let trustedOrigin = self.trustedOrigin {
                 let userScript = WKUserScript(source: webAppSecuredEventProxySource(trustedOrigin: trustedOrigin), injectionTime: .atDocumentStart, forMainFrameOnly: true)
                 userController.addUserScript(userScript)
             }
-        } else {
-            let userScript = WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-            userController.addUserScript(userScript)
         }
         
         let selectionScript = WKUserScript(source: selectionSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
@@ -1768,22 +1786,12 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
 
     
     private func isTrustedMainFrameMessage(_ message: WKScriptMessage) -> Bool {
-        guard message.frameInfo.isMainFrame else {
-            return false
-        }
-        guard self.requestData?.sameOrigin == true else {
-            return true
-        }
-        guard let trustedOrigin = self.trustedOrigin else {
-            return false
-        }
-        guard webAppOrigin(securityOrigin: message.frameInfo.securityOrigin) == trustedOrigin else {
-            return false
-        }
-        if let currentUrl = self.genericView._holder.url, let currentOrigin = webAppOrigin(url: currentUrl), currentOrigin != trustedOrigin {
-            return false
-        }
-        return true
+        return webAppShouldAcceptMessage(
+            isMainFrame: message.frameInfo.isMainFrame,
+            messageOrigin: webAppOrigin(securityOrigin: message.frameInfo.securityOrigin),
+            currentOrigin: self.genericView._holder.url.flatMap { webAppOrigin(url: $0) },
+            trustedOrigin: self.trustedOrigin
+        )
     }
 
     private func handleScriptMessage(_ message: WKScriptMessage) {
@@ -2995,12 +3003,11 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
             }
             return
         }
-        if self.requestData?.sameOrigin == true {
-            guard let trustedOrigin = self.trustedOrigin, let currentUrl = self.genericView._holder.url, webAppOrigin(url: currentUrl) == trustedOrigin else {
-                return
-            }
+        let currentOrigin = self.genericView._holder.url.flatMap { webAppOrigin(url: $0) }
+        guard webAppShouldDeliverEvent(currentOrigin: currentOrigin, trustedOrigin: self.trustedOrigin), let trustedOrigin = self.trustedOrigin else {
+            return
         }
-        let script = "window.TelegramGameProxy.receiveEvent(\"\(name)\", \(data ?? "null"))"
+        let script = webAppSecuredEventSource(name: name, data: data, trustedOrigin: trustedOrigin)
         self.genericView._holder.evaluateJavaScript(script, completionHandler: { _, _ in
 
         })
