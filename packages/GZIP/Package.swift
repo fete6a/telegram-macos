@@ -22,6 +22,12 @@ let package = Package(
             name: "GZIP",
             dependencies: [],
             path: ".",
-            publicHeadersPath: "Sources/GZIP"),
+            exclude: ["Tests"],
+            publicHeadersPath: "Sources/GZIP",
+            linkerSettings: [.linkedLibrary("z")]),
+        .testTarget(
+            name: "GZIPTests",
+            dependencies: ["GZIP"],
+            path: "Tests/GZIPTests"),
     ]
 )

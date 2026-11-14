@@ -1,6 +1,7 @@
 #import "GZip.h"
 
 
+#import <limits.h>
 #import <zlib.h>
 
 bool TGIsGzippedData(NSData *data) {
@@ -45,40 +46,55 @@ NSData *TGGZipData(NSData *data, float level) {
 
 NSData * _Nullable TGGUnzipData(NSData *data, uint sizeLimit)
 {
-    if (data.length == 0 || !TGIsGzippedData(data)) {
+    if (data.length == 0 || data.length > UINT_MAX || !TGIsGzippedData(data)) {
         return nil;
     }
     
     z_stream stream;
     stream.zalloc = Z_NULL;
     stream.zfree = Z_NULL;
-    stream.avail_in = (uint)data.length;
+    stream.opaque = Z_NULL;
+    stream.avail_in = (uInt)data.length;
     stream.next_in = (Bytef *)data.bytes;
     stream.total_out = 0;
     stream.avail_out = 0;
     
     NSMutableData *output = nil;
     if (inflateInit2(&stream, 47) == Z_OK) {
+        static const NSUInteger ChunkSize = 16384;
+        Bytef overflowByte = 0;
         int status = Z_OK;
-        output = [NSMutableData dataWithCapacity:data.length * 2];
+        BOOL exceededLimit = NO;
+        output = [NSMutableData data];
         while (status == Z_OK) {
-            if (sizeLimit > 0 && stream.total_out > sizeLimit) {
-                return nil;
+            if (sizeLimit > 0 && stream.total_out >= sizeLimit) {
+                stream.next_out = &overflowByte;
+                stream.avail_out = 1;
+            } else {
+                NSUInteger chunkSize = ChunkSize;
+                if (sizeLimit > 0) {
+                    uLong remaining = (uLong)sizeLimit - stream.total_out;
+                    chunkSize = (NSUInteger)MIN((uLong)chunkSize, remaining);
+                }
+                if (stream.total_out > NSUIntegerMax - chunkSize) {
+                    status = Z_MEM_ERROR;
+                    break;
+                }
+                output.length = (NSUInteger)stream.total_out + chunkSize;
+                stream.next_out = (Bytef *)output.mutableBytes + stream.total_out;
+                stream.avail_out = (uInt)chunkSize;
             }
-            
-            if (stream.total_out >= output.length) {
-                output.length = output.length + data.length / 2;
-            }
-            stream.next_out = (uint8_t *)output.mutableBytes + stream.total_out;
-            stream.avail_out = (uInt)(output.length - stream.total_out);
             status = inflate(&stream, Z_SYNC_FLUSH);
-        }
-        if (inflateEnd(&stream) == Z_OK) {
-            if (status == Z_STREAM_END) {
-                output.length = stream.total_out;
-            } else if (sizeLimit > 0 && output.length > sizeLimit) {
-                return nil;
+            if (sizeLimit > 0 && stream.total_out > sizeLimit) {
+                exceededLimit = YES;
+                break;
             }
+        }
+        int endStatus = inflateEnd(&stream);
+        if (!exceededLimit && status == Z_STREAM_END && endStatus == Z_OK) {
+            output.length = (NSUInteger)stream.total_out;
+        } else {
+            output = nil;
         }
     }
     
