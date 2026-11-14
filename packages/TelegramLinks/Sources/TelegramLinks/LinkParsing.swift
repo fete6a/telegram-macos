@@ -96,6 +96,10 @@ public let privateTelegramPeerPrefix = "_private_"
 
 public let legacyPassportUsername = "telegrampassport"
 
+func matchesTelegramLinkAction(_ value: String, action: String) -> Bool {
+    return value == action || value.hasPrefix(action + "?") || value.hasPrefix(action + "&") || value == action + "/" || value.hasPrefix(action + "/?") || value.hasPrefix(action + "/&")
+}
+
 public func normalizeURLScheme(_ url: NSString) -> NSString {
     let string = url as String
     guard let colon = string.firstIndex(of: ":") else {
@@ -224,7 +228,8 @@ public func parseInAppLink(_ url: NSString, options: InAppLinkParsingOptions = I
                 return .sendGrams(link: urlString, data: parseSendGramsLink(urlVars(with: string).0))
             }
             for action in actions_me {
-                if string.hasPrefix(action) {
+                let requiresExactMatch = action == actions_me[4] || action == actions_me[5]
+                if string.hasPrefix(action) && (!requiresExactMatch || matchesTelegramLinkAction(string, action: action)) {
                     let value = String(string[string.index(string.startIndex, offsetBy: action.length) ..< string.endIndex])
                     switch action {
                     case actions_me[0]:
@@ -702,7 +707,8 @@ public func parseInAppLink(_ url: NSString, options: InAppLinkParsingOptions = I
 
         for i in 0 ..< known_scheme.count {
             let known = known_scheme[i]
-            if action.hasPrefix(known) {
+            let requiresExactMatch = known == known_scheme[6] || known == known_scheme[7]
+            if action.hasPrefix(known) && (!requiresExactMatch || matchesTelegramLinkAction(action, action: known)) {
 
                 switch known {
                 case known_scheme[0]:

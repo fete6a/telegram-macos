@@ -1477,15 +1477,9 @@ class AppDelegate: NSResponder, NSApplicationDelegate, NSUserNotificationCenterD
                 execute(inapp: link, isExternal: true)
             } else if let authContext = self.authContextValue {
                 let settings = proxySettings(from: url)
-                if settings.1 {
+                if settings.1, let proxy = settings.0 {
                     AppDelegate.eventProcessed = nil
-                    if let proxy = settings.0 {
-                        applyExternalProxy(proxy, accountManager: authContext.sharedContext.accountManager)
-                    } else {
-                        _ = updateProxySettingsInteractively(accountManager: authContext.sharedContext.accountManager, { current -> ProxySettings in
-                            return current.withUpdatedActiveServer(nil)
-                        }).start()
-                    }
+                    applyExternalProxy(proxy, accountManager: authContext.sharedContext.accountManager)
                 }
                 
                 if url.range(of: legacyPassportUsername) != nil || url.range(of: "tg://passport") != nil {

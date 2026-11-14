@@ -274,10 +274,12 @@ final class LinkParsingTests: XCTestCase {
             XCTAssertEqual(password, "secret")
         }
         let secret = String(repeating: "01", count: 16)
-        guard case let .socks(_, settings) = parse("tg://proxy?server=localhost&port=443&secret=\(secret)") else {
-            return XCTFail("Expected MTProto proxy")
+        for url in ["tg://proxy?server=localhost&port=443&secret=\(secret)", "https://t.me/proxy?server=localhost&port=443&secret=\(secret)"] {
+            guard case let .socks(_, settings) = parse(url) else {
+                return XCTFail("Expected MTProto proxy: \(url)")
+            }
+            guard case .mtp = settings.connection else { return XCTFail("Expected MTProto") }
         }
-        guard case .mtp = settings.connection else { return XCTFail("Expected MTProto") }
         guard case .socks = parse("tg://webproxy?server=example.com&secret=\(secret)") else {
             return XCTFail("Expected web proxy")
         }
@@ -287,8 +289,37 @@ final class LinkParsingTests: XCTestCase {
         guard case .nothing = parse("tg://socks?server=localhost&port=1080", options: InAppLinkParsingOptions(hasContext: true)) else {
             return XCTFail("Proxy links require applyProxy")
         }
-        XCTAssertNotNil(proxySettings(from: "tg://socks?server=localhost&port=1080").0)
-        XCTAssertNil(proxySettings(from: "https://t.me/socks?server=localhost&port=1080").0)
+        for url in ["tg://socks?server=localhost&port=1080", "tg://socks&server=localhost&port=1080", "tg://socks/?server=localhost&port=1080"] {
+            let socksSettings = proxySettings(from: url)
+            XCTAssertNotNil(socksSettings.0, url)
+            XCTAssertTrue(socksSettings.1, url)
+        }
+        let webSettings = proxySettings(from: "https://t.me/socks?server=localhost&port=1080")
+        XCTAssertNil(webSettings.0)
+        XCTAssertFalse(webSettings.1)
+    }
+
+    func testMalformedProxyLinksDoNotRequestProxyChanges() {
+        let secret = String(repeating: "01", count: 16)
+        let malformedLinks = [
+            "tg://socks",
+            "tg://socks?server=localhost",
+            "tg://socks?port=1080",
+            "tg://socks?server=localhost&port=bad",
+            "tg://proxy?server=localhost&port=443&secret=invalid",
+            "tg://socksanything?server=localhost&port=1080",
+            "tg://proxyanything?server=localhost&port=443&secret=\(secret)",
+            "https://t.me/socksanything?server=localhost&port=1080",
+            "https://t.me/proxyanything?server=localhost&port=443&secret=\(secret)"
+        ]
+        for url in malformedLinks {
+            let settings = proxySettings(from: url)
+            XCTAssertNil(settings.0, url)
+            XCTAssertFalse(settings.1, url)
+            if case .socks = parse(url) {
+                XCTFail("Malformed proxy link was accepted: \(url)")
+            }
+        }
     }
 
     func testWalletTransferDataAndMissingContext() {

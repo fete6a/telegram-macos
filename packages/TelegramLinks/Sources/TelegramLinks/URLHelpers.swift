@@ -68,13 +68,13 @@ public func proxySettings(from url:String) -> (ProxyServerSettings?, Bool) {
         let action = url.substring(from: telegram_scheme.length)
 
         let (vars, _) = urlVars(with: url as String)
-        if action.hasPrefix("socks") {
+        if matchesTelegramLinkAction(action, action: "socks") {
             if let server = vars[keyURLHost], let maybePort = vars[keyURLPort], let port = Int32(maybePort) {
                 let server = escape(with: server)
                 return (ProxyServerSettings(host: server, port: port, connection: .socks5(username: vars[keyURLUser], password: vars[keyURLPass])), true)
             }
-            return (nil , true)
-        } else if action.hasPrefix("proxy") {
+            return (nil, false)
+        } else if matchesTelegramLinkAction(action, action: "proxy") {
             if let server = vars[keyURLHost], let maybePort = vars[keyURLPort], let port = Int32(maybePort), let rawSecret = vars[keyURLSecret] {
                 let server = escape(with: server)
                 if let secret = MTProxySecret.parse(rawSecret)?.serialize() {
