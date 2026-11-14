@@ -2067,39 +2067,55 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
             guard let botPeer = requestData?.bot, var biometryState = self.biometryState else {
                 return
             }
-            
-            _ = context.peerId
+            guard WebAppBiometryKeychain.canUpdateToken(accessGranted: biometryState.accessGranted) else {
+                let eventData: JSON = ["status": "failed"]
+                self.sendEvent(name: "biometry_token_updated", data: eventData.string)
+                self.sendBiometricInfo(biometryState: biometryState)
+                return
+            }
             
             if let json = json, let token = json["token"] as? String {
-                
-                let sacObject =
-                        SecAccessControlCreateWithFlags(kCFAllocatorDefault,
-                                            kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
-                                            .userPresence,
-                                            nil);
-
-                let secQuery: NSMutableDictionary = [
-                    kSecClass: kSecClassGenericPassword,
-                    kSecAttrAccessControl: sacObject!,
-                    kSecAttrService: "TelegramMiniApp",
-                    kSecAttrAccount: "bot_id_\(botPeer.id.toInt64())"
-                ];
-                
-                
-
+                let accountId = context.peerId.toInt64()
+                let botId = botPeer.id.toInt64()
+                let secQuery = WebAppBiometryKeychain.query(accountId: accountId, botId: botId)
+                let legacyQuery = WebAppBiometryKeychain.legacyQuery(botId: botId)
+                let status: String
                 if token.isEmpty {
                     let resultCode = SecItemDelete(secQuery)
-                    let status = resultCode == errSecSuccess ? "removed" : "failed"
-                    sendEvent(name: "biometry_token_updated", data: "{status: \"\(status)\"}")
-                    biometryState.opaqueToken = nil
+                    _ = SecItemDelete(legacyQuery)
+                    status = resultCode == errSecSuccess || resultCode == errSecItemNotFound ? "removed" : "failed"
+                    if status == "removed" {
+                        biometryState.opaqueToken = nil
+                    }
                 } else {
-                    let tokenData = token.data(using: .utf8)!
+                    guard let sacObject = SecAccessControlCreateWithFlags(
+                        kCFAllocatorDefault,
+                        kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+                        .userPresence,
+                        nil
+                    ), let tokenData = token.data(using: .utf8) else {
+                        let eventData: JSON = ["status": "failed"]
+                        self.sendEvent(name: "biometry_token_updated", data: eventData.string)
+                        self.sendBiometricInfo(biometryState: biometryState)
+                        return
+                    }
+                    secQuery[kSecAttrAccessControl] = sacObject
                     secQuery[kSecValueData] = tokenData
-                    let resultCode = SecItemAdd(secQuery as CFDictionary, nil);
-                    let status = resultCode == errSecSuccess || resultCode == errSecDuplicateItem ? "updated" : "failed"
-                    biometryState.opaqueToken = .init(publicKey: Data(), data: Data())
-                    sendEvent(name: "biometry_token_updated", data: "{status: \"\(status)\"}")
+                    let addResult = SecItemAdd(secQuery as CFDictionary, nil)
+                    var resultCode = addResult
+                    if addResult == errSecDuplicateItem {
+                        secQuery.removeObject(forKey: kSecAttrAccessControl)
+                        secQuery.removeObject(forKey: kSecValueData)
+                        resultCode = SecItemUpdate(secQuery as CFDictionary, [kSecValueData: tokenData] as CFDictionary)
+                    }
+                    status = resultCode == errSecSuccess ? "updated" : "failed"
+                    if status == "updated" {
+                        _ = SecItemDelete(legacyQuery)
+                        biometryState.opaqueToken = .init(publicKey: Data(), data: Data())
+                    }
                 }
+                let eventData: JSON = ["status": status]
+                self.sendEvent(name: "biometry_token_updated", data: eventData.string)
                 self.sendBiometricInfo(biometryState: biometryState)
             }
         case "web_app_biometry_request_auth":
@@ -2107,27 +2123,23 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
             guard let botPeer = requestData?.bot, var biometryState = self.biometryState else {
                 return
             }
-            
-            let sacObject =
-                    SecAccessControlCreateWithFlags(kCFAllocatorDefault,
-                                        kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
-                                        .userPresence,
-                                        nil);
-
-            let secQuery: NSMutableDictionary = [
-                kSecClass: kSecClassGenericPassword,
-                kSecAttrAccessControl: sacObject!,
-                kSecReturnData: true,
-                kSecMatchLimit: kSecMatchLimitOne,
-                kSecAttrService: "TelegramMiniApp",
-                kSecAttrAccount: "bot_id_\(botPeer.id.toInt64())"
-            ];
+            guard WebAppBiometryKeychain.canRequestAuthentication(accessGranted: biometryState.accessGranted, tokenSaved: biometryState.opaqueToken != nil) else {
+                let eventData: JSON = ["status": "failed"]
+                self.sendEvent(name: "biometry_auth_requested", data: eventData.string)
+                self.sendBiometricInfo(biometryState: biometryState)
+                return
+            }
+            let botId = botPeer.id.toInt64()
+            let secQuery = WebAppBiometryKeychain.query(accountId: context.peerId.toInt64(), botId: botId)
+            secQuery[kSecReturnData] = true
+            secQuery[kSecMatchLimit] = kSecMatchLimitOne
+            let legacyQuery = WebAppBiometryKeychain.legacyQuery(botId: botId)
             
             weak let controller = self
             
             
             DispatchQueue.global().async {
-                
+                _ = SecItemDelete(legacyQuery)
                 var itemCopy: CFTypeRef?
                 let resultCode = SecItemCopyMatching(secQuery, &itemCopy)
                 
