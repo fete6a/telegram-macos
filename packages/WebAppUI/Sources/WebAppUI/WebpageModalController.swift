@@ -31,6 +31,10 @@ import InlineStickerLayer
 import AppAnalytics
 
 
+func isAgeVerificationPassed(reportedPassed: Bool, reportedAge: Double, minimumAge: Int32) -> Bool {
+    return reportedPassed && minimumAge <= Int32(reportedAge)
+}
+
 private func webAppOrigin(url: URL) -> String? {
     return webAppOrigin(scheme: url.scheme, host: url.host, port: url.port)
 }
@@ -2450,7 +2454,7 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
             let verify_age_bot = context.appConfiguration.getStringValue("verify_age_bot_username", orElse: "")
             if let json, let passed = json["passed"] as? Bool, let age = json["age"] as? Double, bot?.addressName == verify_age_bot {
                 
-                let passed = passed && context.appConfiguration.getGeneralValue("verify_age_min", orElse: 18) <= Int32(age)
+                let passed = isAgeVerificationPassed(reportedPassed: passed, reportedAge: age, minimumAge: context.appConfiguration.getGeneralValue("verify_age_min", orElse: 18))
                 
                 let header: String
                 let info: String
@@ -2463,6 +2467,9 @@ public class WebpageModalController: ModalViewController, WKNavigationDelegate, 
                 }
 
                 showModalText(for: context.window, text: info, title: header)
+                guard passed else {
+                    return
+                }
                 _ = updateRemoteContentSettingsConfiguration(postbox: context.account.postbox, network: context.account.network, sensitiveContentEnabled: true).start()
                 
                 context.contentConfig.sensitiveContentEnabled = true

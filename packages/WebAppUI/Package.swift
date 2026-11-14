@@ -76,5 +76,9 @@ let package = Package(
                 .product(name: "AppAnalytics", package: "AppAnalytics", condition: nil),
             ],
             path: "Sources/WebAppUI"),
+        .testTarget(
+            name: "WebAppUITests",
+            dependencies: ["WebAppUI"],
+            path: "Tests/WebAppUITests"),
     ]
 )
