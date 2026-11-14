@@ -3,7 +3,7 @@ before_script:
 
 default:
     after_script:
-        - 'if [ "$CI_JOB_STATUS" = "failed" ]; then bash ../deploy/notify-ci-failure.sh || true; fi'
+        - 'if [ "$CI_JOB_STATUS" = "failed" ] && sh ./buildbox/verify-toolbox.sh ../deploy; then bash ../deploy/notify-ci-failure.sh || true; fi'
     artifacts:
         when: always
         expire_in: 7 days
