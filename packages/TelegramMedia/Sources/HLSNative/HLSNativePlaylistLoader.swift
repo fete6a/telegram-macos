@@ -19,6 +19,8 @@ final class HLSNativeQualityFile {
 }
 
 final class HLSNativePlaylistLoader {
+    private static let maximumFetchAttempts = 4
+
     private let engine: TelegramEngine
     private let userLocation: MediaResourceUserLocation
     private let files: [HLSNativeQualityFile]
@@ -86,7 +88,7 @@ final class HLSNativePlaylistLoader {
 
     private func fetch(file: HLSNativeQualityFile) {
         let level = file.level
-        if self.fetchDisposables[level] != nil || self.retryTimers[level] != nil || self.delivered.contains(level) || self.rejected.contains(level) {
+        if self.fetchDisposables[level] != nil || self.retryTimers[level] != nil || self.delivered.contains(level) || self.rejected.contains(level) || (self.fetchAttempts[level] ?? 0) >= HLSNativePlaylistLoader.maximumFetchAttempts {
             return
         }
         let playlistFile = file.playlistFile
@@ -111,6 +113,10 @@ final class HLSNativePlaylistLoader {
         self.fetchDisposables.removeValue(forKey: level)?.dispose()
         let attempts = (self.fetchAttempts[level] ?? 0) + 1
         self.fetchAttempts[level] = attempts
+        if attempts >= HLSNativePlaylistLoader.maximumFetchAttempts {
+            self.onLog?("playlist fetch failed level=\(level) after \(attempts) attempts")
+            return
+        }
         let delay = min(30.0, 2.0 * Double(attempts))
         self.onLog?("playlist fetch failed level=\(level), fetching again in \(Int(delay)) s")
         let timer = SwiftSignalKit.Timer(timeout: delay, repeat: false, completion: { [weak self] in
@@ -144,26 +150,13 @@ final class HLSNativePlaylistLoader {
         if self.delivered.contains(level) || self.rejected.contains(level) {
             return
         }
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), let text = String(data: data, encoding: .utf8) else {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
             self.onLog?("playlist unreadable level=\(level)")
             self.reject(level: level)
             return
         }
-        let playlist: HLSMediaPlaylist
-        do {
-            playlist = try HLSMediaPlaylist.parse(text, resourceSize: file.size)
-        } catch let error {
-            self.onLog?("playlist rejected level=\(level) error=\(error)")
-            self.reject(level: level)
-            return
-        }
-        if playlist.resourceURI != "mtproto:\(file.file.media.fileId.id)" {
-            self.onLog?("playlist names another file level=\(level) uri=\(playlist.resourceURI)")
-            self.reject(level: level)
-            return
-        }
-        if let lastSegment = playlist.segments.last, lastSegment.byteRange.upperBound > file.size {
-            self.onLog?("playlist ranges exceed the file level=\(level)")
+        guard let playlist = validatedHLSMediaPlaylist(data: data, expectedResourceId: file.file.media.fileId.id, resourceSize: file.size) else {
+            self.onLog?("playlist rejected level=\(level)")
             self.reject(level: level)
             return
         }

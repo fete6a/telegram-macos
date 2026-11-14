@@ -122,14 +122,13 @@ public final class HLSVideoContent : UniversalVideoContent {
         let playlistData: Signal<Range<Int64>?, NoError> = Signal { subscriber in
             var fetchDisposable: Disposable?
             if autofetchPlaylist {
-                fetchDisposable = (fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileSet.playlist.media), reference: fileSet.playlist.resourceReference(fileSet.playlist.media.resource))
-                |> retry(2.0, maxDelay: 30.0, onQueue: Queue.concurrentDefaultQueue())).start()
+                fetchDisposable = retryHLSFetch(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileSet.playlist.media), reference: fileSet.playlist.resourceReference(fileSet.playlist.media.resource))).start()
             }
             let dataDisposable = postbox.mediaBox.resourceData(fileSet.playlist.media.resource).start(next: { data in
                 if !data.complete {
                     return
                 }
-                guard let data = try? Data(contentsOf: URL(fileURLWithPath: data.path)), let text = String(data: data, encoding: .utf8), let playlist = try? HLSMediaPlaylist.parse(text, resourceSize: resourceSize) else {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: data.path)), let playlist = validatedHLSMediaPlaylist(data: data, expectedResourceId: fileSet.file.media.fileId.id, resourceSize: resourceSize) else {
                     subscriber.putNext(nil)
                     subscriber.putCompletion()
                     return
@@ -161,8 +160,19 @@ public func fetchedResourceRangeUntilOnDisk(mediaBox: MediaBox, resource: MediaR
     |> mapToSignal { ranges -> Signal<Never, FetchResourceError> in
         return ranges.isSuperset(of: RangeSet(range)) ? .complete() : .fail(.generic)
     }
-    return (fetch |> ignoreValues |> then(isOnDisk))
-    |> retry(2.0, maxDelay: 30.0, onQueue: Queue.concurrentDefaultQueue())
+    return retryHLSFetch(fetch |> ignoreValues |> then(isOnDisk))
+}
+
+private func retryHLSFetch<T>(_ signal: Signal<T, FetchResourceError>, remainingRetries: Int = 3, retryDelay: Double = 2.0) -> Signal<T, NoError> {
+    return signal
+    |> `catch` { _ -> Signal<T, NoError> in
+        guard remainingRetries > 0 else {
+            return .complete()
+        }
+        return Signal<Never, NoError>.complete()
+        |> delay(retryDelay, queue: Queue.concurrentDefaultQueue())
+        |> then(retryHLSFetch(signal, remainingRetries: remainingRetries - 1, retryDelay: min(30.0, retryDelay * 2.0)))
+    }
 }
 
 public final class HLSQualitySet {
