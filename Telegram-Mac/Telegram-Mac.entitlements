@@ -15,5 +15,9 @@
 	<true/>
 	<key>com.apple.security.personal-information.location</key>
 	<true/>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>6N38VWS5BX.ru.keepcoder.Telegram</string>
+    </array>
 </dict>
 </plist>

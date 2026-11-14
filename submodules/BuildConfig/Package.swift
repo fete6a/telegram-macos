@@ -37,5 +37,9 @@ let package = Package(
                 .product(name: "MurMurHash32", package: "MurMurHash32", condition: nil),
             ],
             path: "Tests/BuildConfigTests"),
+        .testTarget(
+            name: "BuildConfigDeviceTests",
+            dependencies: ["BuildConfig"],
+            path: "Tests/BuildConfigDeviceTests"),
     ]
 )

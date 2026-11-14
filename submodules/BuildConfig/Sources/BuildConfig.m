@@ -92,6 +92,17 @@ static NSString *telegramApplicationSecretKey = @"telegramApplicationSecretKey_v
 @end
 
 
+static NSString *const AppEncryptionDeviceKeyService = @"ru.keepcoder.Telegram.AppEncryptionParameters.v1";
+static const uint8_t AppEncryptionDeviceMagic[16] = {'T','G','D','B','K','E','Y',1,0,0,0,0,0,0,0,0};
+static NSData * _Nullable AppEncryptionSecureRandomData(NSUInteger count) {
+    NSMutableData *value = [NSMutableData dataWithLength:count];
+    return SecRandomCopyBytes(kSecRandomDefault, count, value.mutableBytes) == errSecSuccess ? value : nil;
+}
+static BOOL AppEncryptionHasDeviceMagic(NSData *data) {
+    return data.length >= sizeof(AppEncryptionDeviceMagic) &&
+        memcmp(data.bytes, AppEncryptionDeviceMagic, sizeof(AppEncryptionDeviceMagic)) == 0;
+}
+
 static const uint8_t AppEncryptionEnvelopeMagic[] = {'T', 'G', 'K', 'E', 'Y', 'E', 'N', 'C'};
 static const uint32_t AppEncryptionEnvelopeVersion = 2;
 static const uint32_t AppEncryptionMinimumIterations = 600000;
@@ -165,18 +176,36 @@ static BOOL AppEncryptionHasVersionedMagic(NSData *data) {
 @interface AppEncryptionParameters () {
     NSString * _Nonnull _rootPath;
     NSString * _Nonnull _passcode;
+    NSString * _Nonnull _keychainService;
+    NSString * _Nullable _keychainAccessGroup;
+    BOOL _keychainProtectionEnabled;
     NSData * _Nonnull key;
     NSData * _Nonnull iv;
 }
 
+-(id _Nonnull)initWithPath:(NSString * _Nonnull)path keychainAccessGroup:(NSString * _Nullable)accessGroup keychainService:(NSString * _Nonnull)service enableProtection:(BOOL)enabled;
+-(BOOL)writeDeviceEnvelopeForParameters:(DeviceSpecificEncryptionParameters *)parameters;
+-(DeviceSpecificEncryptionParameters * _Nullable)decryptDeviceEnvelope:(NSData *)envelope;
 @end
 
 @implementation AppEncryptionParameters
 
 -(id _Nonnull)initWithPath:(NSString * _Nonnull)path {
+    return [self initWithPath:path keychainAccessGroup:nil keychainService:AppEncryptionDeviceKeyService enableProtection:NO];
+}
+-(id _Nonnull)initWithPath:(NSString * _Nonnull)path keychainAccessGroup:(NSString * _Nullable)group {
+    return [self initWithPath:path keychainAccessGroup:group keychainService:AppEncryptionDeviceKeyService enableProtection:YES];
+}
+-(id _Nonnull)initWithPath:(NSString * _Nonnull)path keychainAccessGroup:(NSString * _Nullable)group keychainService:(NSString * _Nonnull)service {
+    return [self initWithPath:path keychainAccessGroup:group keychainService:service enableProtection:YES];
+}
+-(id _Nonnull)initWithPath:(NSString * _Nonnull)path keychainAccessGroup:(NSString * _Nullable)group keychainService:(NSString * _Nonnull)service enableProtection:(BOOL)enabled {
     self = [super init];
     if (self != nil) {
-        self->_rootPath = path;
+        self->_rootPath = [path copy];
+        self->_keychainAccessGroup = [group copy];
+        self->_keychainService = [service copy];
+        self->_keychainProtectionEnabled = enabled;
         if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
             [NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
         }
@@ -323,6 +352,9 @@ static BOOL AppEncryptionHasVersionedMagic(NSData *data) {
 }
 
 -(BOOL)writeVersionedParameters:(DeviceSpecificEncryptionParameters *)parameters passcode:(NSString *)passcode {
+    if (self->_keychainProtectionEnabled && [passcode isEqualToString:AppEncryptionParameters.defaultKey]) {
+        return [self writeDeviceEnvelopeForParameters:parameters];
+    }
     NSData *envelope = [self versionedEnvelopeForParameters:parameters passcode:passcode];
     if (envelope == nil) {
         return NO;
@@ -360,8 +392,84 @@ static BOOL AppEncryptionHasVersionedMagic(NSData *data) {
     return [self parametersFromPayload:payload];
 }
 
+
+-(NSMutableDictionary *)deviceKeyQuery {
+    NSData *rootData = [self->_rootPath.stringByStandardizingPath dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *digest = CryptoSHA512(rootData.bytes, rootData.length);
+    NSMutableDictionary *query = [@{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: self->_keychainService,
+        (id)kSecAttrAccount: [digest base64EncodedStringWithOptions:0],
+        (id)kSecAttrSynchronizable: @NO
+    } mutableCopy];
+    if (self->_keychainAccessGroup.length > 0) {
+        query[(id)kSecAttrAccessGroup] = self->_keychainAccessGroup;
+    }
+    if (@available(macOS 10.15, *)) {
+        query[(id)kSecUseDataProtectionKeychain] = @YES;
+    }
+    return query;
+}
+-(NSData * _Nullable)loadDeviceKey {
+    NSMutableDictionary *query = [self deviceKeyQuery];
+    query[(id)kSecReturnData] = @YES;
+    query[(id)kSecMatchLimit] = (id)kSecMatchLimitOne;
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+    if (status != errSecSuccess) {
+        if (result) CFRelease(result);
+        return nil;
+    }
+    NSData *data = CFBridgingRelease(result);
+    return data.length == 64 ? data : nil;
+}
+-(NSData * _Nullable)loadOrCreateDeviceKey {
+    NSData *existing = [self loadDeviceKey];
+    if (existing) return existing;
+    NSData *generated = AppEncryptionSecureRandomData(64);
+    if (!generated) return nil;
+    NSMutableDictionary *query = [self deviceKeyQuery];
+    query[(id)kSecValueData] = generated;
+    query[(id)kSecAttrAccessible] = (id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
+    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)query, NULL);
+    if (status == errSecSuccess) return generated;
+    if (status == errSecDuplicateItem) return [self loadDeviceKey];
+    return nil;
+}
+-(BOOL)writeDeviceEnvelopeForParameters:(DeviceSpecificEncryptionParameters *)parameters {
+    NSData *payload = [self payloadForParameters:parameters];
+    NSData *secret = [self loadOrCreateDeviceKey];
+    NSData *randomIv = AppEncryptionSecureRandomData(16);
+    if (!payload || secret.length != 64 || !randomIv) return NO;
+    NSData *encryptionKey = [secret subdataWithRange:NSMakeRange(0, 32)];
+    NSData *authenticationKey = [secret subdataWithRange:NSMakeRange(32, 32)];
+    NSData *ciphertext = CryptoAES(YES, encryptionKey, randomIv, payload);
+    if (ciphertext.length != AppEncryptionPayloadLength) return NO;
+    NSMutableData *envelope = [NSMutableData dataWithBytes:AppEncryptionDeviceMagic length:sizeof(AppEncryptionDeviceMagic)];
+    [envelope appendData:randomIv];
+    [envelope appendData:ciphertext];
+    [envelope appendData:AppEncryptionAuthenticationCode(envelope, authenticationKey)];
+    return [self writeEnvelopeData:envelope];
+}
+-(DeviceSpecificEncryptionParameters * _Nullable)decryptDeviceEnvelope:(NSData *)envelope {
+    if (envelope.length != sizeof(AppEncryptionDeviceMagic) + 16 + AppEncryptionPayloadLength + AppEncryptionMacLength) {
+        return nil;
+    }
+    NSData *secret = [self loadDeviceKey];
+    if (secret.length != 64) return nil;
+    NSData *encryptionKey = [secret subdataWithRange:NSMakeRange(0, 32)];
+    NSData *authenticationKey = [secret subdataWithRange:NSMakeRange(32, 32)];
+    NSData *authenticatedData = [envelope subdataWithRange:NSMakeRange(0, envelope.length - AppEncryptionMacLength)];
+    NSData *storedHmac = [envelope subdataWithRange:NSMakeRange(envelope.length - AppEncryptionMacLength, AppEncryptionMacLength)];
+    NSData *expectedHmac = AppEncryptionAuthenticationCode(authenticatedData, authenticationKey);
+    if (!AppEncryptionConstantTimeEqual(storedHmac, expectedHmac)) return nil;
+    NSData *envelopeIv = [envelope subdataWithRange:NSMakeRange(sizeof(AppEncryptionDeviceMagic), 16)];
+    NSData *ciphertext = [envelope subdataWithRange:NSMakeRange(sizeof(AppEncryptionDeviceMagic) + 16, AppEncryptionPayloadLength)];
+    return [self parametersFromPayload:CryptoAES(NO, encryptionKey, envelopeIv, ciphertext)];
+}
+
 -(BOOL)hasPasscode {
-    AppEncryptionParameters *params = [[AppEncryptionParameters alloc] initWithPath:self->_rootPath];
+    AppEncryptionParameters *params = [[AppEncryptionParameters alloc] initWithPath:self->_rootPath keychainAccessGroup:self->_keychainAccessGroup keychainService:self->_keychainService enableProtection:self->_keychainProtectionEnabled];
     return [params decrypt] == nil;
 }
 
@@ -370,8 +478,15 @@ static BOOL AppEncryptionHasVersionedMagic(NSData *data) {
     if (currentData == nil) {
         return nil;
     }
+    if (AppEncryptionHasDeviceMagic(currentData)) {
+        return [self decryptDeviceEnvelope:currentData];
+    }
     if (AppEncryptionHasVersionedMagic(currentData)) {
-        return [self decryptVersionedEnvelope:currentData];
+        DeviceSpecificEncryptionParameters *parameters = [self decryptVersionedEnvelope:currentData];
+        if (parameters && self->_keychainProtectionEnabled && [self->_passcode isEqualToString:AppEncryptionParameters.defaultKey]) {
+            [self writeDeviceEnvelopeForParameters:parameters];
+        }
+        return parameters;
     }
     if (currentData.length != AppEncryptionPayloadLength) {
         return nil;

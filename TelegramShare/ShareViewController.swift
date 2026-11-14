@@ -71,7 +71,7 @@ class ShareViewController: NSViewController {
         telegramUpdateTheme(updateTheme(with: themeSettings), window: nil, animated: false)
 
         
-        let appEncryption = AppEncryptionParameters(path: rootPath)
+        let appEncryption = AppEncryptionParameters(path: rootPath, keychainAccessGroup: ApiEnvironment.group)
         
         if let deviceSpecificEncryptionParameters = appEncryption.decrypt() {
             let parameters = ValueBoxEncryptionParameters(forceEncryptionIfNoSet: true, key: ValueBoxEncryptionParameters.Key(data: deviceSpecificEncryptionParameters.key)!, salt: ValueBoxEncryptionParameters.Salt(data: deviceSpecificEncryptionParameters.salt)!)

@@ -11,6 +11,8 @@
 @interface AppEncryptionParameters : NSObject
 
 -(id _Nonnull)initWithPath:(NSString * _Nonnull)path;
+-(id _Nonnull)initWithPath:(NSString * _Nonnull)path keychainAccessGroup:(NSString * _Nullable)keychainAccessGroup;
+-(id _Nonnull)initWithPath:(NSString * _Nonnull)path keychainAccessGroup:(NSString * _Nullable)keychainAccessGroup keychainService:(NSString * _Nonnull)keychainService;
 -(void)applyPasscode:(NSString * _Nonnull)passcode;
 -(void)change:(NSString * _Nonnull)passcode;
 -(void)remove;

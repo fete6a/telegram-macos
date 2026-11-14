@@ -71,7 +71,7 @@ func makeAccountManagerAccessChallenge(basePath: String, isTemporary: Bool, isRe
         guard current == nil else {
             return nil
         }
-        let encryption = AppEncryptionParameters(path: (basePath as NSString).deletingLastPathComponent)
+        let encryption = AppEncryptionParameters(path: (basePath as NSString).deletingLastPathComponent, keychainAccessGroup: ApiEnvironment.group)
         let challenge: PostboxAccessChallengeData = encryption.hasPasscode() ? .plaintextPassword(value: "") : .none
         return challenge
     }, finishInitialization: {

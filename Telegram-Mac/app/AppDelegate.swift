@@ -486,7 +486,7 @@ class AppDelegate: NSResponder, NSApplicationDelegate, NSUserNotificationCenterD
         System.updateScaleFactor(window.backingScaleFactor)
         window.minSize = NSMakeSize(400, 550)
         
-        let appEncryption = AppEncryptionParameters(path: rootPath)
+        let appEncryption = AppEncryptionParameters(path: rootPath, keychainAccessGroup: ApiEnvironment.group)
 
         let accountManager = AccountManager<TelegramAccountManagerTypes>(basePath: containerUrl + "/accounts-metadata", isTemporary: false, isReadOnly: false, useCaches: true, removeDatabaseOnError: true, accessChallenge: makeAccountManagerAccessChallenge(basePath: containerUrl + "/accounts-metadata", isTemporary: false, isReadOnly: false))
 
@@ -537,7 +537,7 @@ class AppDelegate: NSResponder, NSApplicationDelegate, NSUserNotificationCenterD
                         try? FileManager.default.removeItem(atPath: rootPath)
                         subscriber.putCompletion()
                         DispatchQueue.main.async {
-                            let appEncryption = AppEncryptionParameters(path: rootPath)
+                            let appEncryption = AppEncryptionParameters(path: rootPath, keychainAccessGroup: ApiEnvironment.group)
                             let accountManager = AccountManager<TelegramAccountManagerTypes>(basePath: self.containerUrl + "/accounts-metadata", isTemporary: false, isReadOnly: false, useCaches: true, removeDatabaseOnError: true, accessChallenge: makeAccountManagerAccessChallenge(basePath: self.containerUrl + "/accounts-metadata", isTemporary: false, isReadOnly: false))
                             if let params = appEncryption.decrypt() {
                                 let parameters = ValueBoxEncryptionParameters(forceEncryptionIfNoSet: true, key: ValueBoxEncryptionParameters.Key(data: params.key)!, salt: ValueBoxEncryptionParameters.Salt(data: params.salt)!)
